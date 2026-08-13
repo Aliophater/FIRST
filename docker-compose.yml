@@ -1,0 +1,165 @@
+# Note-Agent Docker Compose 配置
+# 一键启动开发环境所需的所有服务
+
+version: "3.8"
+
+services:
+  # ==============================================
+  # FastAPI 后端
+  # ==============================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: note-agent-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - CORS_ORIGINS=*
+      - LLM_TYPE=${LLM_TYPE:-OLLAMA}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - CHAT_MODEL_NAME=${CHAT_MODEL_NAME:-qwen3.5:0.8b}
+      - EMBED_MODEL_TYPE=${EMBED_MODEL_TYPE:-OLLAMA}
+      - TEXT_EMBEDDING_MODEL_NAME=${TEXT_EMBEDDING_MODEL_NAME:-qwen3-embedding:0.6b}
+      - RERANKER_MODEL_PATH=/models/bge-reranker-v2-m3
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=root
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=chat_history
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - RATE_LIMIT_ENABLED=false
+    volumes:
+      - ./backend:/app
+      - models_data:/models
+      - chroma_data:/chroma
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - note-agent
+    restart: unless-stopped
+
+  # ==============================================
+  # React 前端 (开发模式)
+  # ==============================================
+  frontend:
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+    container_name: note-agent-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./front:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - note-agent
+    profiles:
+      - full-stack
+
+  # ==============================================
+  # Django 用户服务
+  # ==============================================
+  user-service:
+    build:
+      context: ./DjangoUserService
+      dockerfile: Dockerfile
+    container_name: note-agent-user
+    ports:
+      - "8001:8001"
+    environment:
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=root
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=user_service
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./DjangoUserService:/app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - note-agent
+    profiles:
+      - full-stack
+
+  # ==============================================
+  # MySQL 数据库
+  # ==============================================
+  mysql:
+    image: mysql:8.0
+    container_name: note-agent-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: chat_history
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - note-agent
+    restart: unless-stopped
+
+  # ==============================================
+  # Redis 缓存
+  # ==============================================
+  redis:
+    image: redis:7-alpine
+    container_name: note-agent-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - note-agent
+    restart: unless-stopped
+
+  # ==============================================
+  # Ollama 本地模型服务 (可选)
+  # ==============================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: note-agent-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - note-agent
+    restart: unless-stopped
+    profiles:
+      - ollama
+
+volumes:
+  mysql_data:
+  redis_data:
+  models_data:
+  chroma_data:
+  ollama_data:
+
+networks:
+  note-agent:
+    driver: bridge
